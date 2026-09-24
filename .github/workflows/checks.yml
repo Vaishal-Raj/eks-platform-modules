@@ -1,0 +1,48 @@
+name: Module checks
+
+on:
+    pull_request:
+        branches: [main]
+    push:
+        branches: [main]
+
+permissions:
+    contents: read
+
+jobs:
+    checks:
+        name: fmt + valoidate + tflint
+        runs-on: ubuntu-latest
+        steps:
+            - uses: actions/checkout@v7
+
+            - uses: hashicorp/setup-terraform@v4
+              with:
+                terraform_version: 1.15.8
+                terraform_wrapper: false
+            - name: Format check
+              run: terraform fmt --check --recursive --diff
+
+            - name: Validate every module and example
+              run: |
+                set -euo pipefail
+                for dir in modules/* examples/*; do
+                    [ -d "$dir" ] || continue
+                    echo "::group::validate $dir"
+                    terraform -chdir="$dir" init -backend=false -input=false > /dev/null
+                    terraform -chdir="$dir" validate
+                    echo "::endgroup::"
+                done
+
+            - uses: terraform-linters/setup-tflint@v6
+
+            - name: tflint
+              env:
+                GITHUB_TOKEN: ${{ github.token }}   # avoids GitHub API rate limits when downloading plugins
+              run: |
+                tflint --init --config "$GITHUB_WORKSPACE/.tflint.hcl"
+                tflint --recursive --config "$GITHUB_WORKSPACE/.tflint.hcl"
+
+# - permissions: contents: read, and no id-token: this workflow never talks to AWS.
+# - [ -d "$dir" ] || continue: if examples/ doesn't exist yet on a branch, the loop skips it instead of failing.
+# - --config "$GITHUB_WORKSPACE/.tflint.hcl": --recursive runs tflint in every folder, so it's given the absolute path to the one config file.
