@@ -1,31 +1,49 @@
 output "vpc_id" {
-  value = aws_vpc.this.id
+  description = "VPC ID"
+  value       = aws_vpc.this.id
 }
 
 output "vpc_cidr" {
-  value = aws_vpc.this.cidr_block
+  description = "VPC CIDR block"
+  value       = aws_vpc.this.cidr_block
 }
 
 output "azs" {
-  value = local.azs
+  description = "AZ names used, in order"
+  value       = local.azs
 }
 
 output "private_subnet_ids" {
-  value = [for s in aws_subnet.private : s.id]
+  description = "Private subnet IDs"
+  value       = [for s in aws_subnet.private : s.id]
 }
 
 output "private_subnet_cidrs" {
-  value = [for s in aws_subnet.private : s.cidr_block]
+  description = "Private subnet CIDRs"
+  value       = [for s in aws_subnet.private : s.cidr_block]
+}
+
+output "private_subnet_ids_by_az" {
+  description = "Map of AZ -> private subnet ID"
+  value       = { for az, s in aws_subnet.private : az => s.id }
 }
 
 output "isolated_subnet_ids" {
-  value = [for s in aws_subnet.isolated : s.id]
+  description = "Isolated subnet IDs"
+  value       = [for s in aws_subnet.isolated : s.id]
+}
+
+output "isolated_subnet_cidrs" {
+  description = "Isolated subnet CIDRs"
+  value       = [for s in aws_subnet.isolated : s.cidr_block]
 }
 
 output "private_route_table_id" {
-  value = aws_route_table.private.id
+  description = "Private route table ID (attach gateway endpoints here)"
+  value       = aws_route_table.private.id
 }
 
 output "isolated_route_table_id" {
-  value = aws_route_table.isolated.id
+  description = "Isolated route table ID"
+  value       = aws_route_table.isolated.id
 }
