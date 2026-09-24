@@ -4,31 +4,51 @@ data "aws_availability_zones" "available" {
 }
 
 locals {
-  azs              = slice(data.aws_availability_zones.available.names, 0, var.az_count)
-  private_subnets  = { for i, az in local.azs : az => cidrsubnet(var.vpc_cidr, 4, i) }
-  isolated_subnets = { for i, az in local.azs : az => cidrsubnet(var.vpc_cidr, 8, 48 + i) }
+  azs = slice(data.aws_availability_zones.available.names, 0, var.az_count)
+
+  private_subnets = {
+    for i, az in local.azs : az => cidrsubnet(var.vpc_cidr, var.private_subnet_newbits, i)
+  }
+
+  isolated_subnets = {
+    for i, az in local.azs : az => cidrsubnet(var.vpc_cidr, var.isolated_subnet_newbits, var.isolated_subnet_offset + i)
+  }
 }
 
 resource "aws_vpc" "this" {
   cidr_block           = var.vpc_cidr
-  enable_dns_hostnames = true
-  enable_dns_support   = true
-  tags = {
-    Name = var.name
+  enable_dns_support   = var.enable_dns_support
+  enable_dns_hostnames = var.enable_dns_hostnames
+
+  tags = merge(var.tags, { Name = var.name })
+
+  lifecycle {
+    precondition {
+      condition     = length(local.azs) == var.az_count
+      error_message = "Only ${length(local.azs)} usable AZs in this region after exclusions; az_count is ${var.az_count}."
+    }
+    precondition {
+      condition = alltrue([
+        for i in range(var.az_count) :
+        can(cidrsubnet(var.vpc_cidr, var.private_subnet_newbits, i)) &&
+        can(cidrsubnet(var.vpc_cidr, var.isolated_subnet_newbits, var.isolated_subnet_offset + i))
+      ])
+      error_message = "Subnets don't fit in ${var.vpc_cidr} with these newbits/offset. Use a larger VPC or adjust the subnet sizing variables."
+    }
   }
 }
 
 resource "aws_subnet" "private" {
-  for_each          = local.private_subnets
+  for_each = local.private_subnets
+
   vpc_id            = aws_vpc.this.id
   availability_zone = each.key
   cidr_block        = each.value
 
-  tags = {
-    Name                              = "${var.name}-private-${each.key}"
-    Tier                              = "private"
-    "kubernetes.io/role/internal-elb" = "1"
-  }
+  tags = merge(var.tags, var.private_subnet_tags, {
+    Name = "${var.name}-private-${each.key}"
+    Tier = "private"
+  })
 }
 
 resource "aws_subnet" "isolated" {
@@ -38,30 +58,27 @@ resource "aws_subnet" "isolated" {
   availability_zone = each.key
   cidr_block        = each.value
 
-  tags = {
+  tags = merge(var.tags, var.isolated_subnet_tags, {
     Name = "${var.name}-isolated-${each.key}"
     Tier = "isolated"
-  }
+  })
 }
 
-
-# - for_each over a map, not count over a list. Resources get addresses like aws_subnet.private["us-east-1a"]. With a list they'd be [0] and [1], and inserting an item would shift the numbers, so Terraform would destroy and recreate subnets.
-# - kubernetes.io/role/internal-elb = 1 tells the AWS Load Balancer Controller (M3) where to put the internal ALB.
-
-
+# One route table per tier, with no routes: only AWS's automatic "local" route.
+# No NAT gateway, so there's no reason for one table per AZ.
 resource "aws_route_table" "private" {
   vpc_id = aws_vpc.this.id
-  tags   = { Name = "${var.name}-private" }
+  tags   = merge(var.tags, { Name = "${var.name}-private" })
 }
 
 resource "aws_route_table" "isolated" {
   vpc_id = aws_vpc.this.id
-  tags   = { Name = "${var.name}-isolated" }
+  tags   = merge(var.tags, { Name = "${var.name}-isolated" })
 }
 
-
 resource "aws_route_table_association" "private" {
-  for_each       = aws_subnet.private
+  for_each = aws_subnet.private
+
   subnet_id      = each.value.id
   route_table_id = aws_route_table.private.id
 }
@@ -73,5 +90,9 @@ resource "aws_route_table_association" "isolated" {
   route_table_id = aws_route_table.isolated.id
 }
 
-# - There's one private table for both AZs. Classic designs have one per AZ because each AZ has its own NAT gateway; no NAT here.
-# - The isolated tier gets its own table, so the S3 gateway route added to the private tier never reaches RDS.
+
+# - merge(var.tags, var.private_subnet_tags, { Name = … }): later maps win, so the module's own Name and Tier can't be overwritten by accident.
+# - precondition inside lifecycle: a check that runs at plan time and can look at several variables together. A variable validation only sees its own variable. Here it catches:
+#   - a region with too few AZs after exclusions (otherwise slice would quietly give you fewer than you asked for);
+#   - subnet sizes that don't fit the VPC, with a clear message instead of an unhelpful cidrsubnet error.
+# - The EKS tag is gone from the module. The caller decides whether its subnets are for EKS.
