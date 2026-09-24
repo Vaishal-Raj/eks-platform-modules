@@ -11,7 +11,7 @@ permissions:
 
 jobs:
     checks:
-        name: fmt + valoidate + tflint
+        name: fmt + validate + tflint
         runs-on: ubuntu-latest
         steps:
             - uses: actions/checkout@v7
