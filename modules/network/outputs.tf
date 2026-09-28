@@ -47,3 +47,9 @@ output "isolated_route_table_id" {
   description = "Isolated route table ID"
   value       = aws_route_table.isolated.id
 }
+
+
+output "internet_gateway_id" {
+  description = "Internet gateway ID (no routes; CloudFront VPC origin prerequisite), or null if create_igw = false"
+  value       = one(aws_internet_gateway.this[*].id)
+}

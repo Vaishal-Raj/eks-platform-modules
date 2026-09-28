@@ -96,3 +96,19 @@ resource "aws_route_table_association" "isolated" {
 #   - a region with too few AZs after exclusions (otherwise slice would quietly give you fewer than you asked for);
 #   - subnet sizes that don't fit the VPC, with a clear message instead of an unhelpful cidrsubnet error.
 # - The EKS tag is gone from the module. The caller decides whether its subnets are for EKS.
+
+
+
+# CloudFront VPC origins require the VPC to have an internet gateway attached.
+# It is a precondition only: no route table points at it, so no subnet becomes
+# public and no traffic flows through it. CloudFront reaches the internal ALB
+# through its own ENIs inside the VPC, over the AWS network.
+
+resource "aws_internet_gateway" "this" {
+  count  = var.create_igw ? 1 : 0
+  vpc_id = aws_vpc.this.id
+  tags = merge(var.tags, {
+    Name    = "${var.name}-igw"
+    Purpose = "cloudfront-vpc-origin-prerequisite-no-routes"
+  })
+}
