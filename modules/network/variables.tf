@@ -89,3 +89,10 @@ variable "isolated_subnet_tags" {
   type        = map(string)
   default     = {}
 }
+
+
+variable "create_igw" {
+  description = "Attach an internet gateway with NO routes. Required by CloudFront VPC origins; carries no traffic. Subnets stay private."
+  type        = bool
+  default     = false
+}
