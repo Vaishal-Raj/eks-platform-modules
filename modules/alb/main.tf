@@ -1,6 +1,6 @@
 resource "aws_security_group" "this" {
   name        = "${var.name}-alb"
-  description = "Internal ALB. Inbound is added by the cloudfront module (from CloudFront's VPC origin SG only)."
+  description = "Internal ALB. Inbound is added by the cloudfront module (from CloudFront VPC origin SG only)."
   vpc_id      = var.vpc_id
   tags = merge(var.tags, {
     Name = "${var.name}-alb"
