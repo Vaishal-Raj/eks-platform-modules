@@ -16,6 +16,20 @@ provider "aws" {
   }
 }
 
+# Helm talks to the cluster's API (public endpoint, allowed only from admin_cidr).
+# exec = a fresh token on every run via "aws eks get-token" (no kubeconfig file needed).
+provider "helm" {
+  kubernetes = {
+    host                   = module.eks_cluster.cluster_endpoint
+    cluster_ca_certificate = base64decode(module.eks_cluster.cluster_certificate_authority_data)
+    exec = {
+      api_version = "client.authentication.k8s.io/v1beta1"
+      command     = "aws"
+      args        = ["eks", "get-token", "--cluster-name", module.eks_cluster.cluster_name, "--region", "us-east-1"]
+    }
+  }
+}
+
 data "aws_caller_identity" "current" {}
 
 data "aws_iam_session_context" "current" {
@@ -66,6 +80,43 @@ module "kms" {
   }
 }
 
+# 3a. Internal ALB + empty IP target group (the controller fills it with pod IPs).
+#     It may only send traffic to the private subnets, where the pods live.
+module "alb" {
+  source = "../../modules/alb"
+
+  name                = var.name
+  vpc_id              = module.network.vpc_id
+  subnet_ids          = module.network.private_subnet_ids
+  target_port         = 8080
+  target_egress_cidrs = module.network.private_subnet_cidrs
+}
+
+# Send every request to the target group (the module's default action is a fixed response)
+resource "aws_lb_listener_rule" "forward_all" {
+  listener_arn = module.alb.listener_arn
+  priority     = 100
+
+  action {
+    type             = "forward"
+    target_group_arn = module.alb.target_group_arn
+  }
+
+  condition {
+    path_pattern {
+      values = ["/*"]
+    }
+  }
+}
+
+# 3b. ECR pull-through cache: no NAT, so public images (the controller, the test app)
+#     are pulled through ECR, which fetches them from upstream once
+module "ecr" {
+  source = "../../modules/ecr"
+
+  name = var.name # cache rules only (defaults: ecr-public, k8s, quay); no app repositories
+}
+
 # 4. sg-node: added to every node (pods -> VPC endpoints on 443, -> S3 gateway)
 module "security_groups" {
   source = "../../modules/security-groups"
@@ -73,6 +124,7 @@ module "security_groups" {
   name                    = var.name
   vpc_id                  = module.network.vpc_id
   vpce_security_group_ids = [module.vpc_endpoints.security_group_id]
+  alb_security_group_ids  = [module.alb.security_group_id] # ALB -> pods on 8080
   create_rds_sg           = false
   create_cache_sg         = false
 }
@@ -121,6 +173,11 @@ module "node_group" {
   subnet_ids                    = module.network.private_subnet_ids
   cluster_security_group_id     = module.eks_cluster.cluster_security_group_id
   additional_security_group_ids = [module.security_groups.node_security_group_id]
+
+  # First pull of a cached image creates its ECR repository: the node role needs that right
+  additional_policy_jsons = {
+    ecr-pull-through-cache = module.ecr.pull_through_cache_policy_json
+  }
 
   instance_types = ["t3.medium"]
   capacity_type  = "ON_DEMAND" # SPOT is cheaper for dev, but can be interrupted
@@ -175,4 +232,24 @@ module "addons_after_nodes" {
   }
 
   depends_on = [module.node_group]
+}
+
+# 10. AWS Load Balancer Controller: keeps the target group in sync with pod IPs (TargetGroupBinding).
+#     Least-privilege mode: it can only register/deregister targets in THIS target group.
+module "alb_controller" {
+  source = "../../modules/alb-controller"
+
+  name              = var.name
+  cluster_name      = module.eks_cluster.cluster_name
+  vpc_id            = module.network.vpc_id
+  oidc_provider_arn = module.eks_cluster.oidc_provider_arn
+  oidc_provider     = module.eks_cluster.oidc_provider
+
+  target_group_arns = [module.alb.target_group_arn]
+
+  # public.ecr.aws/eks/aws-load-balancer-controller, through the ECR cache
+  image_repository = "${module.ecr.pull_through_cache_urls["ecr-public"]}/eks/aws-load-balancer-controller"
+
+  # Its pods need nodes + CoreDNS; the IRSA token exchange goes through the STS endpoint
+  depends_on = [module.addons_after_nodes]
 }
