@@ -43,3 +43,16 @@ output "test_app_manifest" {
     target_group_arn = module.alb.target_group_arn
   })
 }
+
+output "external_secrets_role_arn" {
+  value = module.external_secrets.role_arn
+}
+
+# terraform output -raw test_external_secret_manifest | kubectl apply -f -
+output "test_external_secret_manifest" {
+  description = "ExternalSecret in default: copies the demo secret into the Kubernetes Secret demo-db"
+  value = templatefile("${path.module}/test-external-secret.yaml.tftpl", {
+    store_name  = module.external_secrets.cluster_secret_store_name
+    secret_name = aws_secretsmanager_secret.demo.name
+  })
+}

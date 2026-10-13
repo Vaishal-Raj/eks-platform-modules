@@ -77,6 +77,11 @@ module "kms" {
       allow_cloudwatch_logs   = true
       deletion_window_in_days = 7
     }
+    secrets = {
+      description             = "Secrets Manager (the demo secret External Secrets reads)"
+      via_services            = ["secretsmanager"]
+      deletion_window_in_days = 7
+    }
   }
 }
 
@@ -114,7 +119,20 @@ resource "aws_lb_listener_rule" "forward_all" {
 module "ecr" {
   source = "../../modules/ecr"
 
-  name = var.name # cache rules only (defaults: ecr-public, k8s, quay); no app repositories
+  name = var.name # cache rules only; no app repositories
+
+  pull_through_cache_rules = {
+    "ecr-public" = { upstream_registry_url = "public.ecr.aws" }
+    "k8s"        = { upstream_registry_url = "registry.k8s.io" }
+    "quay"       = { upstream_registry_url = "quay.io" }
+    # External Secrets images are only on ghcr.io, and ECR needs credentials for ghcr (a PAT you create by hand)
+    "ghcr" = { upstream_registry_url = "ghcr.io", credential_arn = data.aws_secretsmanager_secret.ghcr.arn }
+  }
+}
+
+# Created by hand, never by Terraform (the PAT must not be in state). See docs/external-secrets.md §6.
+data "aws_secretsmanager_secret" "ghcr" {
+  name = var.ghcr_credential_secret_name
 }
 
 # 4. sg-node: added to every node (pods -> VPC endpoints on 443, -> S3 gateway)
@@ -251,5 +269,39 @@ module "alb_controller" {
   image_repository = "${module.ecr.pull_through_cache_urls["ecr-public"]}/eks/aws-load-balancer-controller"
 
   # Its pods need nodes + CoreDNS; the IRSA token exchange goes through the STS endpoint
+  depends_on = [module.addons_after_nodes]
+}
+
+# 11. A demo secret, shaped like the RDS master secret, encrypted with our KMS key.
+#     (Real clients: module.rds.master_user_secret_arn + the rds KMS key.)
+resource "aws_secretsmanager_secret" "demo" {
+  name                    = "${var.name}/demo-db"
+  description             = "Demo secret for testing External Secrets (not a real credential)"
+  kms_key_id              = module.kms.key_arns["secrets"]
+  recovery_window_in_days = 0 # throwaway test: delete immediately on destroy
+}
+
+resource "aws_secretsmanager_secret_version" "demo" {
+  secret_id     = aws_secretsmanager_secret.demo.id
+  secret_string = jsonencode({ username = "demo", password = "not-a-real-password" })
+}
+
+# 12. External Secrets Operator: may read ONLY the demo secret, and decrypt only through Secrets Manager.
+#     Only the "default" namespace may use the ClusterSecretStore.
+module "external_secrets" {
+  source = "../../modules/external-secrets"
+
+  name              = var.name
+  oidc_provider_arn = module.eks_cluster.oidc_provider_arn
+  oidc_provider     = module.eks_cluster.oidc_provider
+
+  secret_arns  = [aws_secretsmanager_secret.demo.arn]
+  kms_key_arns = [module.kms.key_arns["secrets"]]
+
+  # ghcr.io/external-secrets/external-secrets, through the ECR cache
+  image_repository = "${module.ecr.pull_through_cache_urls["ghcr"]}/external-secrets/external-secrets"
+
+  store_allowed_namespaces = ["default"]
+
   depends_on = [module.addons_after_nodes]
 }

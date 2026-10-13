@@ -1,0 +1,5 @@
+# Set by the external-secrets Terraform module
+name: aws-secrets-manager
+region: us-east-1
+# Namespaces allowed to use this store. Empty = every namespace.
+namespaces: []
