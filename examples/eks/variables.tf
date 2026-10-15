@@ -25,3 +25,14 @@ variable "admin_cidr" {
     error_message = "admin_cidr must be a CIDR such as 203.0.113.10/32, and not 0.0.0.0/0."
   }
 }
+
+variable "ghcr_credential_secret_name" {
+  description = "Secrets Manager secret (created by hand) with a GitHub PAT for the ECR ghcr.io pull-through cache. Name must start with ecr-pullthroughcache/."
+  type        = string
+  default     = "ecr-pullthroughcache/ghcr"
+
+  validation {
+    condition     = startswith(var.ghcr_credential_secret_name, "ecr-pullthroughcache/")
+    error_message = "ECR only accepts credential secrets whose name starts with ecr-pullthroughcache/."
+  }
+}

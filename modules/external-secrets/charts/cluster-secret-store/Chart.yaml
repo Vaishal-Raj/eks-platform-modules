@@ -1,0 +1,5 @@
+apiVersion: v2
+name: cluster-secret-store
+description: One ClusterSecretStore pointing at AWS Secrets Manager (installed after the External Secrets chart, so its CRDs and webhook exist)
+type: application
+version: 0.1.0
